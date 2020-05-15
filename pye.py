@@ -46,6 +46,22 @@ from re import compile as re_compile
 termcap_vt100 = True
 #endif
 
+direct_lcd_io = False # output is to the LCD
+uart_input = False
+console_io = True
+
+#ifdef DIRECT_LCD_IO
+try:
+    from simpleTerminal import editorTerminal
+    direct_lcd_io = True # output is to the LCD
+    uart_input=True # input is accepted via UART
+    console_io = False
+    terminal = None # terminal class variable (should get created once)
+    display = None # display class variable (should get created once)
+except ImportError:
+    pass
+#endif
+
 KEY_NONE      = const(0x00)
 KEY_UP        = const(0x0b)
 KEY_DOWN      = const(0x0d)
@@ -185,6 +201,8 @@ class Editor:
             "{chd}{file} {row}:{col}  {msg}",
         ]
 
+#ifdef CONSOLE_IO
+    if console_io:
         def get_screen_size(self):
             self.wr(Editor.TERMCAP[13])
             pos = ''
@@ -193,7 +211,13 @@ class Editor:
                 pos += char
                 char = self.rd()
             return [int(i, 10) for i in pos.lstrip("\n\x1b[").split(';')]
+#endif
+#endif
 
+#ifdef DIRECT_LCD_IO    
+    if direct_lcd_io:
+        def get_screen_size(self):
+            return Editor.terminal.getScreenSize()
 #endif
     
 ## symbols that are shared between instances of Editor
@@ -262,43 +286,144 @@ class Editor:
 #ifdef MICROPYTHON
     if is_micropython and not is_linux:
 
-        def wr(self, s):
-            sys.stdout.write(s)
+#ifdef DIRECT_LCD_IO
+        if direct_lcd_io: ####### DIRECT_LCD_IO
+            
+            def wr(self,s):
+                Editor.terminal.write(s)
 
-        def rd(self):
-            return sys.stdin.read(1)
+            @staticmethod
+            def init_display():
+                import fontio, displayio, terminalio, board
+                from adafruit_st7789 import ST7789
+                displayio.release_displays()
 
-        def rd_raw(self):
-            return Editor.rd_raw_fct(1)
+                spi = board.SPI()
+                spi = board.SPI()
+                tft_cs = board.D12 # arbitrary, pin not used for my display
+                tft_dc = board.D2
+                tft_backlight = board.D4
+                tft_reset=board.D3
 
-        @staticmethod
-        def init_tty(device):
-            try:
-                from micropython import kbd_intr
-                kbd_intr(-1)
-            except ImportError:
-                pass
-            if hasattr(sys.stdin, "buffer"):
-                Editor.rd_raw_fct = sys.stdin.buffer.read
-            else:
-                Editor.rd_raw_fct = sys.stdin.read
+                while not spi.try_lock():
+                    pass
+                spi.unlock()
 
-        @staticmethod
-        def deinit_tty():
-            try:
-                from micropython import kbd_intr
-                kbd_intr(3)
-            except ImportError:
-                pass
+                display_bus = displayio.FourWire(
+                    spi,
+                    command=tft_dc,
+                    chip_select=tft_cs,
+                    reset=tft_reset,
+                    baudrate=24000000,
+                    polarity=1,
+                    phase=1,
+                )
+
+                Editor.xPixels=240 # number of xPixels for the display
+                Editor.yPixels=240 # number of yPixels for the display
+
+                Editor.display = ST7789(display_bus, width=Editor.xPixels, height=Editor.yPixels, rotation=0, rowstart=80, colstart=0)
+                Editor.display.show(None)
+
+            @staticmethod
+            def init_terminal():
+                from simpleTerminal import editorTerminal
+                Editor.terminal=editorTerminal(Editor.display,
+                                               displayXPixels=Editor.xPixels,
+                                               displayYPixels=Editor.yPixels)
+                
+            @staticmethod
+            def init_tty(device): # initialize input, display, and terminal
+
+                Editor.init_display();
+                Editor.init_terminal();
+
+                Editor.KEYMAP['\x08'] = KEY_BACKSPACE
+                
+                import busio, board
+                Editor.uart = busio.UART(board.TX, board.RX, baudrate=115200, timeout=0.1, receiver_buffer_size=64)
+                    
+                try:
+                    from micropython import kbd_intr
+                    kbd_intr(-1)
+                except ImportError:
+                    pass
+                    
+            @staticmethod
+            def deinit_tty():
+                Editor.uart.deinit() # clear out the UART
+                Editor.display.show(None) # remove the groups from the display
+                try:
+                    from micropython import kbd_intr
+                    kbd_intr(3)
+                except ImportError:
+                    pass
+
+            def rd(self):
+                while True:
+                    myInput=Editor.uart.read(1) # for using uart
+                    if myInput is None:
+                        pass
+                    else:
+                        return myInput.decode('utf-8')
+
+            def rd_raw(self): ## just to have it implemented
+                return self.rd()
 #endif
-    def goto(self, row, col):
-        self.wr(Editor.TERMCAP[0].format(row=row + 1, col=col + 1))
+#ifdef CONSOLE_IO
+        if console_io:
+            def wr(self, s):
+                sys.stdout.write(s)
 
-    def clear_to_eol(self):
-        self.wr(Editor.TERMCAP[1])
+            def rd(self):
+                return sys.stdin.read(1)
 
-    def cursor(self, onoff):
-        self.wr(Editor.TERMCAP[2] if onoff else Editor.TERMCAP[3])
+            def rd_raw(self):
+                return Editor.rd_raw_fct(1)
+
+            @staticmethod
+            def init_tty(device):
+                try:
+                    from micropython import kbd_intr
+                    kbd_intr(-1)
+                except ImportError:
+                    pass
+                if hasattr(sys.stdin, "buffer"):
+                    Editor.rd_raw_fct = sys.stdin.buffer.read
+                else:
+                    Editor.rd_raw_fct = sys.stdin.read
+
+            @staticmethod
+            def deinit_tty():
+                try:
+                    from micropython import kbd_intr
+                    kbd_intr(3)
+                except ImportError:
+                    pass
+#endif
+#endif
+#ifdef DIRECT_LCD_IO
+    if direct_lcd_io: ####### DIRECT_LCD_IO
+        def goto(self, row, col):
+            Editor.terminal.setCursor(col, row)
+
+        def clear_to_eol(self):
+            Editor.terminal.clearEOL()
+
+        def cursor(self, onoff):
+            Editor.terminal.cursor(onoff)
+#endif
+#ifdef CONSOLE_IO
+    if console_io: ####### DIRECT_LCD_IO
+        def goto(self, row, col):
+            self.wr(Editor.TERMCAP[0].format(row=row + 1, col=col + 1))
+
+        def clear_to_eol(self):
+            self.wr(Editor.TERMCAP[1])
+
+        def cursor(self, onoff):
+            self.wr(Editor.TERMCAP[2] if onoff else Editor.TERMCAP[3])
+#endif
 
     def hilite(self, mode):
         if mode == 1: ## used for the status line
@@ -1043,7 +1168,7 @@ class Editor:
 
             if key == KEY_QUIT:
                 if self.hash != self.hash_buffer():
-                    res = self.line_edit("File changed! Quit (y/N)? ", "N")
+                    res = self.line_edit("Quit without saving (y/N)?", "N")
                     if not res or res[0].upper() != 'Y':
                         continue
                 self.scroll_region(0)

@@ -1,5 +1,5 @@
+PYE_VERSION = " V2.47 "
 import sys, gc
-termcap_vt100 = True
 if sys.platform in ("linux", "darwin"):
     import os, signal, tty, termios
     is_linux = True
@@ -17,7 +17,10 @@ else:
     const = lambda x:x
     from _io import StringIO
 from re import compile as re_compile
-PYE_VERSION = " V2.47 "
+termcap_vt100 = True
+direct_lcd_io = False
+uart_input = False
+console_io = True
 KEY_NONE = const(0x00)
 KEY_UP = const(0x0b)
 KEY_DOWN = const(0x0d)
@@ -149,6 +152,7 @@ class Editor:
             "{chd}{file} Row: {row}/{total} Col: {col}  {msg}",
             "{chd}{file} {row}:{col}  {msg}",
         ]
+    if console_io:
         def get_screen_size(self):
             self.wr(Editor.TERMCAP[13])
             pos = ''
@@ -178,36 +182,38 @@ class Editor:
         self.write_tabs = "n"
         self.work_dir = os.getcwd()
     if is_micropython and not is_linux:
-        def wr(self, s):
-            sys.stdout.write(s)
-        def rd(self):
-            return sys.stdin.read(1)
-        def rd_raw(self):
-            return Editor.rd_raw_fct(1)
-        @staticmethod
-        def init_tty(device):
-            try:
-                from micropython import kbd_intr
-                kbd_intr(-1)
-            except ImportError:
-                pass
-            if hasattr(sys.stdin, "buffer"):
-                Editor.rd_raw_fct = sys.stdin.buffer.read
-            else:
-                Editor.rd_raw_fct = sys.stdin.read
-        @staticmethod
-        def deinit_tty():
-            try:
-                from micropython import kbd_intr
-                kbd_intr(3)
-            except ImportError:
-                pass
-    def goto(self, row, col):
-        self.wr(Editor.TERMCAP[0].format(row=row + 1, col=col + 1))
-    def clear_to_eol(self):
-        self.wr(Editor.TERMCAP[1])
-    def cursor(self, onoff):
-        self.wr(Editor.TERMCAP[2] if onoff else Editor.TERMCAP[3])
+        if console_io:
+            def wr(self, s):
+                sys.stdout.write(s)
+            def rd(self):
+                return sys.stdin.read(1)
+            def rd_raw(self):
+                return Editor.rd_raw_fct(1)
+            @staticmethod
+            def init_tty(device):
+                try:
+                    from micropython import kbd_intr
+                    kbd_intr(-1)
+                except ImportError:
+                    pass
+                if hasattr(sys.stdin, "buffer"):
+                    Editor.rd_raw_fct = sys.stdin.buffer.read
+                else:
+                    Editor.rd_raw_fct = sys.stdin.read
+            @staticmethod
+            def deinit_tty():
+                try:
+                    from micropython import kbd_intr
+                    kbd_intr(3)
+                except ImportError:
+                    pass
+    if console_io:
+        def goto(self, row, col):
+            self.wr(Editor.TERMCAP[0].format(row=row + 1, col=col + 1))
+        def clear_to_eol(self):
+            self.wr(Editor.TERMCAP[1])
+        def cursor(self, onoff):
+            self.wr(Editor.TERMCAP[2] if onoff else Editor.TERMCAP[3])
     def hilite(self, mode):
         if mode == 1:
             self.wr(Editor.TERMCAP[5])
@@ -900,7 +906,7 @@ class Editor:
             self.message = ''
             if key == KEY_QUIT:
                 if self.hash != self.hash_buffer():
-                    res = self.line_edit("File changed! Quit (y/N)? ", "N")
+                    res = self.line_edit("Quit without saving (y/N)?", "N")
                     if not res or res[0].upper() != 'Y':
                         continue
                 self.scroll_region(0)
